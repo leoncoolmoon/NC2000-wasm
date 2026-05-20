@@ -22,6 +22,7 @@ export default defineConfig({
   build: {
     outDir: '../build',
     emptyOutDir: true,
+    minify: false,
     rollupOptions: {
       output: {
         entryFileNames: 'assets/[name]_[hash].js',
