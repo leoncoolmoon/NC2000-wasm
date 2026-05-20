@@ -22,8 +22,12 @@ export default defineConfig({
   build: {
     outDir: '../build',
     emptyOutDir: true,
+    minify: false,
     rollupOptions: {
       output: {
+        entryFileNames: 'assets/[name]_[hash].js',
+        chunkFileNames: 'assets/[name]_[hash].js',
+        assetFileNames: 'assets/[name]_[hash].[ext]',
         manualChunks(id) {
           if (id.includes('node_modules')) {
             if (id.includes('vue')) {
