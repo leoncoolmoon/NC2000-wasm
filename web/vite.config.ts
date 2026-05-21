@@ -1,10 +1,39 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
+import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    VitePWA({
+      registerType: 'autoUpdate',
+      includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg', 'resource/*', 'roms/*'],
+      manifest: {
+        name: 'WQXSIM',
+        short_name: 'WQXSIM',
+        description: 'NC2000 Emulator',
+        theme_color: '#ffffff',
+        icons: [
+          {
+            src: 'vite.svg',
+            sizes: '192x192',
+            type: 'image/svg+xml'
+          },
+          {
+            src: 'vite.svg',
+            sizes: '512x512',
+            type: 'image/svg+xml'
+          }
+        ]
+      },
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,wasm,json,bmp,nand,nand0,nor}'],
+        maximumFileSizeToCacheInBytes: 50 * 1024 * 1024, // 50MB, as ROMs might be large
+      }
+    })
+  ],
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src'),
