@@ -474,6 +474,12 @@ body select {
 .drawer .checkbox-label input {
   margin-right: 8px;
 }
+.drawer .status-note {
+  font-size: 12px;
+  color: #666;
+  margin-top: 5px;
+  line-height: 1.4;
+}
 .drawer.open {
   transform: translateX(0);
 }

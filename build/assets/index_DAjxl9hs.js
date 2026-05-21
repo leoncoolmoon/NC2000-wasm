@@ -1,4 +1,4 @@
-import { C as toDisplayString, S as normalizeClass, _ as openBlock, a as vShow, b as ref, c as Fragment, d as createCommentVNode, f as createElementBlock, g as onMounted, h as nextTick, i as vModelText, l as computed, m as defineComponent, n as createApp, o as withKeys, p as createVNode, r as vModelSelect, s as withModifiers, t as createPinia, u as createBaseVNode, v as renderList, x as unref, y as withDirectives } from "./vue_CxJ_mWdi.js";
+import { S as toDisplayString, _ as openBlock, a as vShow, b as ref, c as Fragment, d as createCommentVNode, f as createElementBlock, g as onMounted, h as nextTick, i as vModelText, l as computed, m as defineComponent, n as createApp, o as withKeys, p as createVNode, r as vModelSelect, s as withModifiers, t as createPinia, u as createBaseVNode, v as renderList, x as normalizeClass, y as withDirectives } from "./vue_D2AZwDpq.js";
 (function polyfill() {
 	const relList = document.createElement("link").relList;
 	if (relList && relList.supports && relList.supports("modulepreload")) return;
@@ -9056,6 +9056,8 @@ var _hoisted_15 = { class: "emscripten" };
 var _hoisted_16 = ["value", "max"];
 var _hoisted_17 = { class: "emscripten_border" };
 var _hoisted_18 = { class: "screen_num" };
+var DB_NAME = "WQXSIM_DB";
+var STORE_NAME = "files";
 var app = createApp(/* @__PURE__ */ defineComponent({
 	__name: "App",
 	setup(__props) {
@@ -9065,7 +9067,9 @@ var app = createApp(/* @__PURE__ */ defineComponent({
 				args: [
 					"--nc2000",
 					"--rom",
-					"roms/nc2000"
+					"roms/nc2000",
+					"--load-state",
+					"--auto-save-all"
 				],
 				files: [
 					{
@@ -9087,7 +9091,9 @@ var app = createApp(/* @__PURE__ */ defineComponent({
 				args: [
 					"--nc2000",
 					"--rom",
-					"roms/fc42"
+					"roms/fc42",
+					"--load-state",
+					"--auto-save-all"
 				],
 				files: [
 					{
@@ -9162,7 +9168,62 @@ var app = createApp(/* @__PURE__ */ defineComponent({
 		const canvasRef = ref(null);
 		const zoomContainerRef = ref(null);
 		const outputRef = ref(null);
-		let wasmInstance = null;
+		const wasmInstance = ref(null);
+		function openDB() {
+			return new Promise((resolve, reject) => {
+				const request = indexedDB.open(DB_NAME, 1);
+				request.onupgradeneeded = () => {
+					const db = request.result;
+					if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME);
+				};
+				request.onsuccess = () => resolve(request.result);
+				request.onerror = () => reject(request.error);
+			});
+		}
+		async function saveFileToDB(path, data) {
+			const db = await openDB();
+			return new Promise((resolve, reject) => {
+				const request = db.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME).put(data, path);
+				request.onsuccess = () => resolve();
+				request.onerror = () => reject(request.error);
+			});
+		}
+		async function getFileFromDB(path) {
+			const db = await openDB();
+			return new Promise((resolve, reject) => {
+				const request = db.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).get(path);
+				request.onsuccess = () => resolve(request.result || null);
+				request.onerror = () => reject(request.error);
+			});
+		}
+		async function saveCurrentState() {
+			if (!wasmInstance.value) return;
+			try {
+				romStatusText.value = "正在同步到浏览器存储...";
+				const FS = wasmInstance.value.FS;
+				for (const path of [
+					"/roms/nc2000.state",
+					"/roms/nc2000.nand",
+					"/roms/nc2000.nand0",
+					"/roms/nc2000.nor",
+					"/roms/fc42.state",
+					"/roms/fc42.nand",
+					"/roms/fc42.nand0",
+					"/roms/fc42.nor"
+				]) try {
+					if (FS.analyzePath(path).exists) {
+						const data = FS.readFile(path);
+						await saveFileToDB(path, data);
+						console.log(`Persisted ${path} to IndexedDB`);
+					}
+				} catch (e) {}
+				romStatusText.value = "保存成功";
+				setTimeout(() => romStatusText.value = "", 3e3);
+			} catch (err) {
+				console.error("保存状态失败:", err);
+				romStatusText.value = "保存状态失败";
+			}
+		}
 		function toggleDrawer() {
 			isDrawerOpen.value = !isDrawerOpen.value;
 		}
@@ -9200,12 +9261,13 @@ var app = createApp(/* @__PURE__ */ defineComponent({
 			});
 		}
 		async function applyRomChange() {
-			if (!wasmInstance) {
+			if (!wasmInstance.value) {
 				romStatusText.value = "WASM模块尚未加载完成，请稍后再试";
 				return;
 			}
 			try {
 				romStatusText.value = "正在切换ROM...";
+				await saveCurrentState();
 				await restartWithNewRom();
 				const romConfig = romConfigs[currentRom.value];
 				romStatusText.value = romConfig ? `已切换到: ${romConfig.name || ""}` : `已切换到未知 ROM`;
@@ -9215,10 +9277,10 @@ var app = createApp(/* @__PURE__ */ defineComponent({
 			}
 		}
 		async function restartWithNewRom() {
-			if (!wasmInstance) throw new Error("WASM实例未初始化");
+			if (!wasmInstance.value) throw new Error("WASM实例未初始化");
 			const romConfig = romConfigs[currentRom.value];
 			console.log("使用新ROM重新启动...");
-			wasmInstance.callMain(romConfig?.args || []);
+			wasmInstance.value.callMain(romConfig?.args || []);
 			console.log("wqxsim 已使用新ROM启动。");
 		}
 		function setUpScreenFit() {
@@ -9267,11 +9329,19 @@ var app = createApp(/* @__PURE__ */ defineComponent({
 					return false;
 				};
 				const instance = await wqxsim_default(Module);
-				wasmInstance = instance;
+				wasmInstance.value = instance;
 				console.log("Wasm 模块已加载，准备文件系统...", instance);
 				const FS = instance.FS;
 				Module.setStatus(`Downloading ${filesToLoad.length} asset(s)...`);
 				const fetchPromises = filesToLoad.map(async (file) => {
+					const savedData = await getFileFromDB(file.vfsPath);
+					if (savedData) {
+						console.log(`Restored ${file.vfsPath} from IndexedDB`);
+						return {
+							data: savedData,
+							path: file.vfsPath
+						};
+					}
 					const response = await fetch(file.url);
 					if (!response.ok) throw new Error(`Failed to fetch ${file.url}: ${response.statusText}`);
 					const data = await response.arrayBuffer();
@@ -9281,7 +9351,19 @@ var app = createApp(/* @__PURE__ */ defineComponent({
 					};
 				});
 				const loadedFiles = await Promise.all(fetchPromises);
-				Module.setStatus("Files downloaded. Writing to virtual file system...");
+				const romKeys = Object.keys(romConfigs);
+				for (const key of romKeys) {
+					const statePath = `/roms/${key}.state`;
+					const savedState = await getFileFromDB(statePath);
+					if (savedState) {
+						loadedFiles.push({
+							data: savedState,
+							path: statePath
+						});
+						console.log(`Restored ${statePath} from IndexedDB`);
+					}
+				}
+				Module.setStatus("Files downloaded/restored. Writing to virtual file system...");
 				for (const file of loadedFiles) {
 					const lastSlashIndex = file.path.lastIndexOf("/");
 					const dirPath = lastSlashIndex > 0 ? file.path.substring(0, lastSlashIndex) : ".";
@@ -9320,7 +9402,7 @@ var app = createApp(/* @__PURE__ */ defineComponent({
 		return (_ctx, _cache) => {
 			return openBlock(), createElementBlock("div", _hoisted_1, [
 				createBaseVNode("div", { class: normalizeClass(["drawer", { open: isDrawerOpen.value }]) }, [
-					_cache[6] || (_cache[6] = createBaseVNode("h2", null, "- ", -1)),
+					_cache[8] || (_cache[8] = createBaseVNode("h2", null, "- ", -1)),
 					createBaseVNode("div", _hoisted_2, [
 						_cache[2] || (_cache[2] = createBaseVNode("h3", null, "ROM选择", -1)),
 						withDirectives(createBaseVNode("select", {
@@ -9364,7 +9446,15 @@ var app = createApp(/* @__PURE__ */ defineComponent({
 							onChange: handleAutoFitChange
 						}, null, 40, _hoisted_10), _cache[4] || (_cache[4] = createBaseVNode("span", null, "自适应屏幕", -1))])
 					]),
-					createVNode(FileManager_default, { wasmInstance: unref(wasmInstance) }, null, 8, ["wasmInstance"])
+					createBaseVNode("div", { class: "control-section" }, [
+						_cache[6] || (_cache[6] = createBaseVNode("h3", null, "系统状态", -1)),
+						createBaseVNode("button", {
+							onClick: saveCurrentState,
+							class: "primary-button full-width"
+						}, "保存状态到浏览器"),
+						_cache[7] || (_cache[7] = createBaseVNode("p", { class: "status-note" }, "保存后，刷新页面将自动恢复系统状态。", -1))
+					]),
+					createVNode(FileManager_default, { wasmInstance: wasmInstance.value }, null, 8, ["wasmInstance"])
 				], 2),
 				createBaseVNode("div", {
 					class: normalizeClass(["drawer-overlay", { show: isDrawerOpen.value }]),
@@ -9374,7 +9464,7 @@ var app = createApp(/* @__PURE__ */ defineComponent({
 					class: "drawer-toggle",
 					onClick: toggleDrawer
 				}, "☰"),
-				createBaseVNode("div", _hoisted_11, [_cache[7] || (_cache[7] = createBaseVNode("h1", null, "WQXSIM", -1)), createBaseVNode("div", _hoisted_12, [withDirectives(createBaseVNode("div", _hoisted_13, null, 512), [[vShow, showSpinner.value]]), createBaseVNode("div", _hoisted_14, toDisplayString(statusText.value), 1)])]),
+				createBaseVNode("div", _hoisted_11, [_cache[9] || (_cache[9] = createBaseVNode("h1", null, "WQXSIM", -1)), createBaseVNode("div", _hoisted_12, [withDirectives(createBaseVNode("div", _hoisted_13, null, 512), [[vShow, showSpinner.value]]), createBaseVNode("div", _hoisted_14, toDisplayString(statusText.value), 1)])]),
 				createBaseVNode("div", _hoisted_15, [withDirectives(createBaseVNode("progress", {
 					value: progressValue.value,
 					max: progressMax.value
@@ -9412,7 +9502,7 @@ var app = createApp(/* @__PURE__ */ defineComponent({
 						rows: "8",
 						style: { "display": "none" }
 					}, null, 512), [[vModelText, outputText.value]]),
-					createVNode(VirtualKeyboard_default, { wasmInstance: unref(wasmInstance) }, null, 8, ["wasmInstance"])
+					createVNode(VirtualKeyboard_default, { wasmInstance: wasmInstance.value }, null, 8, ["wasmInstance"])
 				], 512)
 			]);
 		};

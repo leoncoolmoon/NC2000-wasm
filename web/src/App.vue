@@ -17,7 +17,7 @@ interface RomConfig {
 const romConfigs: Record<string, RomConfig> = {
   'nc2000': {
     name: 'nc2000/2600 官方3.5',
-    args: ['--nc2000', '--rom', 'roms/nc2000'],
+    args: ['--nc2000', '--rom', 'roms/nc2000', '--load-state', '--auto-save-all'],
     files: [
       { url: 'roms/nc2000.nand', vfsPath: '/roms/nc2000.nand' },
       { url: 'roms/nc2000.nand0', vfsPath: '/roms/nc2000.nand0' },
@@ -26,7 +26,7 @@ const romConfigs: Record<string, RomConfig> = {
   },
   'nc2600c_fc42': {
     name: 'nc2600c 非常4.2 by 41824984 - 24MB扩容',
-    args: ['--nc2000', '--rom', 'roms/fc42'],
+    args: ['--nc2000', '--rom', 'roms/fc42', '--load-state', '--auto-save-all'],
     files: [
       { url: 'roms/fc42.nand', vfsPath: '/roms/fc42.nand' },
       { url: 'roms/fc42.nand0', vfsPath: '/roms/fc42.nand0' },
@@ -71,7 +71,86 @@ const zoomContainerRef = ref<HTMLDivElement | null>(null);
 const outputRef = ref<HTMLTextAreaElement | null>(null);
 
 // WASM 实例
-let wasmInstance: any = null;
+const wasmInstance = ref<any>(null);
+
+// IndexedDB 相关
+const DB_NAME = 'WQXSIM_DB';
+const STORE_NAME = 'files';
+
+function openDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function saveFileToDB(path: string, data: Uint8Array) {
+  const db = await openDB();
+  return new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.put(data, path);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function getFileFromDB(path: string): Promise<Uint8Array | null> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, 'readonly');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.get(path);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+// 保存当前状态到 IndexedDB
+async function saveCurrentState() {
+  if (!wasmInstance.value) return;
+
+  try {
+    romStatusText.value = '正在同步到浏览器存储...';
+    const FS = wasmInstance.value.FS;
+
+    // 我们主要保存 .state 文件和可能被修改的 NAND/NOR 文件
+    const filesToPersist = [
+      '/roms/nc2000.state',
+      '/roms/nc2000.nand',
+      '/roms/nc2000.nand0',
+      '/roms/nc2000.nor',
+      '/roms/fc42.state',
+      '/roms/fc42.nand',
+      '/roms/fc42.nand0',
+      '/roms/fc42.nor',
+    ];
+
+    for (const path of filesToPersist) {
+      try {
+        if (FS.analyzePath(path).exists) {
+          const data = FS.readFile(path);
+          await saveFileToDB(path, data);
+          console.log(`Persisted ${path} to IndexedDB`);
+        }
+      } catch (e) {
+        // 忽略不存在的文件
+      }
+    }
+    romStatusText.value = '保存成功';
+    setTimeout(() => romStatusText.value = '', 3000);
+  } catch (err) {
+    console.error('保存状态失败:', err);
+    romStatusText.value = '保存状态失败';
+  }
+}
 
 
 // 切换抽屉状态
@@ -142,13 +221,16 @@ function setupZoomControls() {
 
 // 应用ROM更改
 async function applyRomChange() {
-  if (!wasmInstance) {
+  if (!wasmInstance.value) {
     romStatusText.value = 'WASM模块尚未加载完成，请稍后再试';
     return;
   }
 
   try {
     romStatusText.value = '正在切换ROM...';
+
+    // 在切换前保存当前状态
+    await saveCurrentState();
 
     // 重新加载WASM
     await restartWithNewRom();
@@ -162,7 +244,7 @@ async function applyRomChange() {
 
 // 使用新ROM重新启动
 async function restartWithNewRom() {
-  if (!wasmInstance) {
+  if (!wasmInstance.value) {
     throw new Error('WASM实例未初始化');
   }
 
@@ -170,7 +252,7 @@ async function restartWithNewRom() {
 
   // 重新调用main函数
   console.log("使用新ROM重新启动...");
-  wasmInstance.callMain(romConfig?.args || []);
+  wasmInstance.value.callMain(romConfig?.args || []);
   console.log("wqxsim 已使用新ROM启动。");
 }
 
@@ -237,7 +319,7 @@ async function loadAndRun() {
     };
 
     const instance = await WqxsimModule(Module);
-    wasmInstance = instance;
+    wasmInstance.value = instance;
 
     console.log("Wasm 模块已加载，准备文件系统...", instance);
 
@@ -247,6 +329,13 @@ async function loadAndRun() {
     // 下载所有文件
     Module.setStatus(`Downloading ${filesToLoad.length} asset(s)...`);
     const fetchPromises = filesToLoad.map(async (file) => {
+      // 首先尝试从 IndexedDB 加载
+      const savedData = await getFileFromDB(file.vfsPath);
+      if (savedData) {
+        console.log(`Restored ${file.vfsPath} from IndexedDB`);
+        return { data: savedData, path: file.vfsPath };
+      }
+
       const response = await fetch(file.url);
       if (!response.ok) {
         throw new Error(`Failed to fetch ${file.url}: ${response.statusText}`);
@@ -257,8 +346,19 @@ async function loadAndRun() {
 
     const loadedFiles = await Promise.all(fetchPromises);
 
-    // 将所有已下载的文件写入 VFS
-    Module.setStatus('Files downloaded. Writing to virtual file system...');
+    // 也要尝试加载 .state 文件
+    const romKeys = Object.keys(romConfigs);
+    for (const key of romKeys) {
+      const statePath = `/roms/${key}.state`;
+      const savedState = await getFileFromDB(statePath);
+      if (savedState) {
+        loadedFiles.push({ data: savedState, path: statePath });
+        console.log(`Restored ${statePath} from IndexedDB`);
+      }
+    }
+
+    // 将所有已下载或从 DB 恢复的文件写入 VFS
+    Module.setStatus('Files downloaded/restored. Writing to virtual file system...');
     for (const file of loadedFiles) {
       const lastSlashIndex = file.path.lastIndexOf('/');
       const dirPath = lastSlashIndex > 0 ? file.path.substring(0, lastSlashIndex) : '.';
@@ -366,6 +466,12 @@ onMounted(() => {
           <span>自适应屏幕</span>
         </label>
       </div>
+      <div class="control-section">
+        <h3>系统状态</h3>
+        <button @click="saveCurrentState" class="primary-button full-width">保存状态到浏览器</button>
+        <p class="status-note">保存后，刷新页面将自动恢复系统状态。</p>
+      </div>
+
       <FileManager :wasmInstance="wasmInstance" />
 
     </div>
@@ -543,6 +649,13 @@ body {
     input {
       margin-right: 8px;
     }
+  }
+
+  .status-note {
+    font-size: 12px;
+    color: #666;
+    margin-top: 5px;
+    line-height: 1.4;
   }
 
   &.open {
